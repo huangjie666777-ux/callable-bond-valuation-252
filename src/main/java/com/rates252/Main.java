@@ -74,5 +74,58 @@ public final class Main {
                 System.out.printf("  %-8s %.6f%n", dv.id(), dv.dv01());
             }
         }
+
+        // Callable bond demo: 5% bond maturing 2027-06-28, callable at the
+        // first two coupon dates; 2-day grid, 1.5% annual short-rate vol.
+        Bond callableBond = new Bond(LocalDate.of(2026, 6, 28),
+                List.of(LocalDate.of(2026, 12, 28), LocalDate.of(2027, 3, 28),
+                        LocalDate.of(2027, 6, 28)),
+                100.0, 0.0500);
+        List<CallDate> callSchedule = List.of(
+                new CallDate(LocalDate.of(2026, 12, 28), 101.00),
+                new CallDate(LocalDate.of(2027, 3, 28), 100.50));
+        double sigma = 0.015;
+        int stepDays = 2;
+        CallableBondPrice callable = new CallableBondPricer().price(
+                callableBond, settlementDate, curve, sigma, stepDays, callSchedule);
+
+        System.out.println();
+        System.out.println("callable bond (5% to 2027-06-28, calls at 101.00/100.50,");
+        System.out.println("settlement " + settlementDate + ", sigma=" + sigma
+                + ", step=" + stepDays + "d, steps=" + (callable.calibrationResiduals().size()) + "):");
+        System.out.printf("  callable dirty per 100:     %.6f%n", callable.dirtyPrice());
+        System.out.printf("  accrued per 100:            %.6f%n", callable.accruedInterest());
+        System.out.printf("  callable clean per 100:     %.6f%n", callable.cleanPrice());
+        System.out.printf("  non-callable dirty per 100: %.6f%n", callable.nonCallableDirtyPrice());
+        System.out.printf("  call option cost per 100:   %.6f%n", callable.optionCost());
+        double worstResidual = callable.calibrationResiduals().stream()
+                .mapToDouble(Math::abs).max().orElse(0.0);
+        System.out.printf("  max |tree calibration residual|: %.2e%n", worstResidual);
+        System.out.println("  call-date summary (nodes, calls, deepest-in-the-money node):");
+        java.time.LocalDate current = null;
+        java.util.List<CallExerciseInfo> day = new java.util.ArrayList<>();
+        for (CallExerciseInfo info : callable.exercises()) {
+            if (!info.date().equals(current)) {
+                printCallDay(day);
+                day.clear();
+                current = info.date();
+            }
+            day.add(info);
+        }
+        printCallDay(day);
+    }
+
+    private static void printCallDay(List<CallExerciseInfo> day) {
+        if (day.isEmpty()) {
+            return;
+        }
+        CallExerciseInfo deepest = day.stream()
+                .max(java.util.Comparator.comparingDouble(
+                        i -> i.continuationValue() - i.callPricePer100()))
+                .orElseThrow();
+        long calls = day.stream().filter(CallExerciseInfo::exercised).count();
+        System.out.printf("  %s call at %.2f: %d/%d nodes CALL; deepest j=%d r=%.5f cont=%.4f%n",
+                deepest.date(), deepest.callPricePer100(), calls, day.size(),
+                deepest.nodeIndex(), deepest.shortRate(), deepest.continuationValue());
     }
 }

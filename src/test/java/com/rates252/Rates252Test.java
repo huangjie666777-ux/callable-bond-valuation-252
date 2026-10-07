@@ -184,4 +184,103 @@ class Rates252Test {
         assertTrue(failed.failed());
         assertNotNull(failed.failureReason());
     }
+
+    private static Bond callableBond() {
+        return new Bond(LocalDate.of(2026, 6, 28),
+                List.of(LocalDate.of(2026, 12, 28), LocalDate.of(2027, 3, 28),
+                        LocalDate.of(2027, 6, 28)),
+                100.0, 0.05);
+    }
+
+    private static final LocalDate SETTLE = LocalDate.of(2026, 9, 15);
+
+    @Test
+    void treeCalibratesToCurveAndRejectsBadGrids() {
+        DiscountCurve curve = new CurveBootstrapper(TIGHT).bootstrap(V, deposits(), swaps()).curve();
+        ShortRateTree tree = new ShortRateTree(curve, SETTLE,
+                LocalDate.of(2027, 6, 28), 2, 0.015);
+        assertEquals(143, tree.stepCount());
+        assertEquals(143, tree.calibrationResiduals().size());
+        for (double residual : tree.calibrationResiduals()) {
+            assertTrue(Math.abs(residual) <= 1.0e-10);
+        }
+        // sigma = 0 collapses to a single deterministic rate per level.
+        ShortRateTree flat = new ShortRateTree(curve, SETTLE,
+                LocalDate.of(2027, 6, 28), 2, 0.0);
+        assertEquals(flat.rateAt(3, 0), flat.rateAt(3, 3), 0.0);
+        assertThrows(IllegalArgumentException.class,
+                () -> new ShortRateTree(curve, SETTLE, LocalDate.of(2027, 6, 28), 7, 0.01));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ShortRateTree(curve, SETTLE, LocalDate.of(2029, 6, 28), 3, 0.01));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ShortRateTree(curve, SETTLE, LocalDate.of(2027, 6, 28), 2, -0.01));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ShortRateTree(curve, SETTLE, LocalDate.of(2027, 6, 28), 2, Double.NaN));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ShortRateTree(curve, SETTLE, LocalDate.of(2030, 6, 28), 2, 0.01));
+    }
+
+    @Test
+    void callableWithoutCallsMatchesStraightBond() {
+        DiscountCurve curve = new CurveBootstrapper(TIGHT).bootstrap(V, deposits(), swaps()).curve();
+        CallableBondPrice result = new CallableBondPricer().price(
+                callableBond(), SETTLE, curve, 0.015, 2, List.of());
+        BondPrice straight = new BondPricer().price(callableBond(), SETTLE, curve);
+        assertEquals(straight.dirtyPrice(), result.dirtyPrice(), 1.0e-8);
+        assertEquals(straight.dirtyPrice(), result.nonCallableDirtyPrice(), 0.0);
+        assertEquals(0.0, result.optionCost(), 1.0e-8);
+        assertEquals(straight.accruedInterest(), result.accruedInterest(), 0.0);
+        assertEquals(result.dirtyPrice() - result.accruedInterest(),
+                result.cleanPrice(), 1.0e-10);
+        assertTrue(result.exercises().isEmpty());
+    }
+
+    @Test
+    void callsCapPriceAndExerciseFlagsArePerNode() {
+        DiscountCurve curve = new CurveBootstrapper(TIGHT).bootstrap(V, deposits(), swaps()).curve();
+        List<CallDate> calls = List.of(
+                new CallDate(LocalDate.of(2026, 12, 28), 101.0),
+                new CallDate(LocalDate.of(2027, 3, 28), 100.5));
+        CallableBondPrice result = new CallableBondPricer().price(
+                callableBond(), SETTLE, curve, 0.015, 2, calls);
+        assertTrue(result.optionCost() >= 0.0);
+        assertTrue(result.dirtyPrice() <= result.nonCallableDirtyPrice() + 1.0e-10);
+        assertEquals(53 + 98, result.exercises().size());
+        for (CallExerciseInfo info : result.exercises()) {
+            assertEquals(info.continuationValue() > info.callPricePer100(), info.exercised());
+            assertTrue(Double.isFinite(info.shortRate()));
+        }
+        // A strike far below any plausible continuation forces exercise
+        // everywhere and pins the price to the first call.
+        CallableBondPrice pinned = new CallableBondPricer().price(callableBond(), SETTLE,
+                curve, 0.015, 2, List.of(new CallDate(LocalDate.of(2026, 12, 28), 50.0)));
+        assertTrue(pinned.exercises().stream().allMatch(CallExerciseInfo::exercised));
+        assertTrue(pinned.dirtyPrice() < 100.0);
+    }
+
+    @Test
+    void rejectsInvalidCallSchedules() {
+        DiscountCurve curve = new CurveBootstrapper(TIGHT).bootstrap(V, deposits(), swaps()).curve();
+        CallableBondPricer pricer = new CallableBondPricer();
+        Bond bond = callableBond();
+        assertThrows(IllegalArgumentException.class,
+                () -> new CallDate(LocalDate.of(2026, 12, 28), 0.0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CallDate(LocalDate.of(2026, 12, 28), Double.NaN));
+        // duplicate
+        assertThrows(IllegalArgumentException.class, () -> pricer.price(bond, SETTLE, curve,
+                0.01, 2, List.of(new CallDate(LocalDate.of(2026, 12, 28), 100.0),
+                        new CallDate(LocalDate.of(2026, 12, 28), 101.0))));
+        // not a coupon date
+        assertThrows(IllegalArgumentException.class, () -> pricer.price(bond, SETTLE, curve,
+                0.01, 2, List.of(new CallDate(LocalDate.of(2027, 1, 28), 100.0))));
+        // on settlement / on maturity
+        assertThrows(IllegalArgumentException.class, () -> pricer.price(bond, SETTLE, curve,
+                0.01, 2, List.of(new CallDate(SETTLE, 100.0))));
+        assertThrows(IllegalArgumentException.class, () -> pricer.price(bond, SETTLE, curve,
+                0.01, 2, List.of(new CallDate(LocalDate.of(2027, 6, 28), 100.0))));
+        // coupon date off the grid
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(bond, SETTLE, curve, 0.01, 4, List.of()));
+    }
 }

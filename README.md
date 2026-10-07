@@ -51,10 +51,33 @@ Console Standalone 1.10.3。要求 JDK 17 与 GNU Make。
 重新定价债券，净价 DV01 = `(P(下移) - P(上移)) / 2`。某个方向引导或定价失败时，该报价结果
 `QuoteDv01` 只带失败原因，不写零。
 
+## 发行人提前赎回债券估值
+
+`CallableBondPricer.price(bond, settlementDate, curve, sigma, stepDays, callSchedule)`
+在重组二叉短率树上做向后递推，量化发行人赎回权成本：
+
+- 网格：结算日至到期按等步长天数划分，跨度必须整除步长且步数不超过 300；
+  结算后全部付息日必须落在网格上；整个网格不得超出曲线范围。
+- 树（`ShortRateTree`）：`dt = 步长天数 / 365`，i 层 j 节点短率
+  `r = a_i + (2j - i) * sigma * sqrt(dt)`，上下概率各半，连续复利 `exp(-r * dt)` 折现；
+  允许负利率与 `sigma = 0`（`sigma` 须有限非负）。
+- 校准：逐层二分求解 `a_i`，使累计状态价格复现 `D(下一网格日) / D(结算日)`；
+  每层残差随结果返回，残差非有限或超容差（1e-10）即抛异常，不交付价格。
+- 赎回表（`CallDate`）：每百元赎回价须正且有限；赎回日只能是结算后、到期前的
+  付息日，重复或非法日期一律拒绝。
+- 行权：赎回日先付当期票息，发行人再比较继续价值与不含当期票息的赎回价，取较小者，
+  等值时继续；赎回后不再支付未来息本；无赎回时到期付息还本。
+- 输出（`CallableBondPrice`）：每百元可赎回全价、应计、净价、无赎回对照全价
+  （沿原 `BondPricer` 现金流链）及两者价差（赎回权成本）；`CallExerciseInfo`
+  给出每个赎回日各节点的短率、继续价值与行权标记（非静态收益率阈值）。
+
+`make run` 示例末尾展示同一 5% 债券有无赎回的估值对照与赎回日行权汇总。
+
 ## 包结构
 
 `src/main/java/com/rates252/`：`DayCount`、`Validate`、`CurveConfig`、`DepositQuote`、
 `SwapQuote`、`DiscountCurve`、`CurveBootstrapper`、`BootstrapResult`、`InstrumentRepricing`、
 `BootstrapException`、`Bond`、`BondCashflow`、`BondPrice`、`BondPricer`、`QuoteDv01`、
-`Dv01Report`、`RiskEngine`、`Main`。
+`Dv01Report`、`RiskEngine`、`CallDate`、`ShortRateTree`、`CallExerciseInfo`、
+`CallableBondPrice`、`CallableBondPricer`、`Main`。
 自测：`src/test/java/com/rates252/Rates252Test.java`。
