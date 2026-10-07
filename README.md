@@ -51,10 +51,37 @@ Console Standalone 1.10.3。要求 JDK 17 与 GNU Make。
 重新定价债券，净价 DV01 = `(P(下移) - P(上移)) / 2`。某个方向引导或定价失败时，该报价结果
 `QuoteDv01` 只带失败原因，不写零。
 
+## 发行人提前赎回估值
+
+`CallableBondPricer.price(Bond, 结算日, DiscountCurve, sigma, 等步长天数, List<CallPrice>)`
+在原债券现金流定价链上接入重组二叉短率树，量化发行人赎回权成本；不修改任何输入：
+
+- 输入校验：`sigma` 必须有限非负；结算日至到期日天数必须被步长天数整除且不超过 300 步；
+  结算日后每个剩余付息日（含到期日）都必须落在网格上；网格末日不得晚于曲线最后节点。
+- 树定义：`i` 层 `j` 节点短率 `r = a_i + (2j - i) * sigma * sqrt(dt)`，
+  `dt = 步长天数 / 365`，上下风险中性概率各半，折现因子为 `exp(-r*dt)`；允许负利率与 `sigma=0`。
+- 逐层校准：由上一层状态价格解析求解 `a_i`，使到达下一网格日的状态价格之和等于
+  `D(下一网格日) / D(结算)`；每层的复现残差随结果返回，非有限状态价格/短率抛出
+  `TreeCalibrationException`，残差超过 `1e-10` 不交付价格。
+- 赎回表 `CallPrice(date, price)`：每百元价格必须为正有限，日期必须严格位于
+  `(结算日, 到期日)` 内且是剩余付息日，重复日期拒绝。
+- 向后递推：赎回日先支付当期票息，再比较不含当期票息的继续价值与赎回价，发行人取较小者；
+  严格大于才行权，等值继续。行权后该节点不再承担未来息本；无赎回时到期付息还本。
+- 结果 `CallableBondPrice` 返回每百元可赎回全价、复用原 ACT/365F 规则的应计与净价、
+  同一棵树上的无赎回对照全价、二者价差（赎回权成本）、逐层校准残差，以及每个赎回日各节点的
+  短率、继续价值（不含当期票息）和行权标记 `CallNodeSnapshot`。
+- 无赎回对照树价必须复现 `BondPricer` 的曲线全价（容差 `1e-8`），否则拒绝交付，
+  确保树、合同与原现金流定价链一致；不使用静态收益率阈值。
+
+`make run` 在原有存款/互换报价引导出的同一曲线上额外展示一只 6% 可赎回债券：
+结算日 2026-10-06、100 天等步长、`sigma=1.20%`、两个赎回日（101.50、100.75），
+并打印无赎回曲线价/树价、可赎回全价/净价、赎回权成本、校准残差与各节点行权结果。
+
 ## 包结构
 
 `src/main/java/com/rates252/`：`DayCount`、`Validate`、`CurveConfig`、`DepositQuote`、
 `SwapQuote`、`DiscountCurve`、`CurveBootstrapper`、`BootstrapResult`、`InstrumentRepricing`、
 `BootstrapException`、`Bond`、`BondCashflow`、`BondPrice`、`BondPricer`、`QuoteDv01`、
-`Dv01Report`、`RiskEngine`、`Main`。
+`Dv01Report`、`RiskEngine`、`ShortRateTree`、`TreeCalibrationException`、`CallPrice`、
+`CallableBondPrice`、`CallNodeSnapshot`、`CallableBondPricer`、`Main`。
 自测：`src/test/java/com/rates252/Rates252Test.java`。

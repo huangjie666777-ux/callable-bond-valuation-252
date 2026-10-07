@@ -74,5 +74,45 @@ public final class Main {
                 System.out.printf("  %-8s %.6f%n", dv.id(), dv.dv01());
             }
         }
+
+        LocalDate callableSettlement = LocalDate.of(2026, 10, 6);
+        Bond callableBond = new Bond(LocalDate.of(2025, 1, 14),
+                List.of(LocalDate.of(2026, 1, 14), LocalDate.of(2027, 1, 14),
+                        LocalDate.of(2027, 4, 24), LocalDate.of(2027, 8, 2)),
+                100.0, 0.0600);
+        int stepDays = 100;
+        double sigma = 0.0120;
+        List<CallPrice> callSchedule = List.of(
+                new CallPrice(LocalDate.of(2027, 1, 14), 101.50),
+                new CallPrice(LocalDate.of(2027, 4, 24), 100.75));
+
+        BondPrice comparison = new BondPricer()
+                .price(callableBond, callableSettlement, curve);
+        CallableBondPrice callable = new CallableBondPricer().price(
+                callableBond, callableSettlement, curve, sigma, stepDays, callSchedule);
+
+        System.out.println();
+        System.out.println("issuer-callable bond on the same bootstrapped curve");
+        System.out.println("settlement: " + callableSettlement
+                + ", equal step: " + stepDays + " days");
+        System.out.printf("annualized short-rate volatility sigma: %.4f%n", sigma);
+        System.out.printf("non-callable curve dirty price per 100: %.6f%n",
+                comparison.dirtyPrice());
+        System.out.printf("non-callable tree dirty price per 100:  %.6f%n",
+                callable.optionFreePrice());
+        System.out.printf("callable dirty price per 100:           %.6f%n", callable.dirtyPrice());
+        System.out.printf("accrued per 100:                        %.6f%n",
+                callable.accruedInterest());
+        System.out.printf("callable clean price per 100:           %.6f%n", callable.cleanPrice());
+        System.out.printf("embedded call option cost per 100:      %.6f%n", callable.callSpread());
+        double maxResidual = callable.calibrationResiduals().stream()
+                .mapToDouble(Double::doubleValue).map(Math::abs).max().orElseThrow();
+        System.out.printf("max curve-reproduction residual:        %.2e%n", maxResidual);
+        System.out.println("call-date node decisions (ex-coupon comparison):");
+        for (CallNodeSnapshot snapshot : callable.callSnapshots()) {
+            System.out.printf("  %s j=%d r=%.6f continuation=%.6f %s%n", snapshot.date(),
+                    snapshot.nodeIndex(), snapshot.shortRate(), snapshot.continuationValue(),
+                    snapshot.exercised() ? "CALLED" : "continue");
+        }
     }
 }

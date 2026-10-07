@@ -184,4 +184,95 @@ class Rates252Test {
         assertTrue(failed.failed());
         assertNotNull(failed.failureReason());
     }
+
+    @Test
+    void callableTreeReproducesCurveAndValuesEmbeddedCall() {
+        BootstrapResult r = new CurveBootstrapper(TIGHT).bootstrap(V, deposits(), swaps());
+        LocalDate settle = LocalDate.of(2026, 10, 6);
+        Bond bond = new Bond(LocalDate.of(2025, 1, 14),
+                List.of(LocalDate.of(2026, 1, 14), LocalDate.of(2027, 1, 14),
+                        LocalDate.of(2027, 4, 24), LocalDate.of(2027, 8, 2)),
+                100.0, 0.06);
+        List<CallPrice> calls = List.of(
+                new CallPrice(LocalDate.of(2027, 1, 14), 101.50),
+                new CallPrice(LocalDate.of(2027, 4, 24), 100.75));
+        CallableBondPricer pricer = new CallableBondPricer();
+        CallableBondPrice price =
+                pricer.price(bond, settle, r.curve(), 0.012, 100, calls);
+
+        BondPrice plain = new BondPricer().price(bond, settle, r.curve());
+        assertEquals(3, price.calibrationResiduals().size());
+        for (double residual : price.calibrationResiduals()) {
+            assertEquals(0.0, residual, 1.0e-12);
+        }
+        assertEquals(plain.dirtyPrice(), price.optionFreePrice(), 1.0e-9);
+        assertTrue(price.callSpread() > 0.0);
+        assertEquals(price.optionFreePrice() - price.dirtyPrice(),
+                price.callSpread(), 1.0e-12);
+        assertEquals(price.dirtyPrice() - price.accruedInterest(),
+                price.cleanPrice(), 1.0e-12);
+        assertEquals(100.0 * 0.06 * 265.0 / 365.0,
+                price.accruedInterest(), 1.0e-12);
+        assertEquals(5, price.callSnapshots().size());
+        assertTrue(price.callSnapshots().stream().anyMatch(CallNodeSnapshot::exercised));
+        for (CallNodeSnapshot snapshot : price.callSnapshots()) {
+            assertTrue(Double.isFinite(snapshot.shortRate()));
+            assertTrue(Double.isFinite(snapshot.continuationValue()));
+        }
+
+        CallableBondPrice zeroVol = pricer.price(bond, settle, r.curve(), 0.0, 100, calls);
+        assertEquals(plain.dirtyPrice(), zeroVol.optionFreePrice(), 1.0e-9);
+        assertTrue(zeroVol.callSpread() >= 0.0);
+        for (CallNodeSnapshot snapshot : zeroVol.callSnapshots()) {
+            assertEquals(snapshot.shortRate(),
+                    zeroVol.callSnapshots().stream()
+                            .filter(other -> other.date().equals(snapshot.date()))
+                            .findFirst().orElseThrow().shortRate(), 0.0);
+        }
+    }
+
+    @Test
+    void rejectsInvalidCallableInputs() {
+        BootstrapResult r = new CurveBootstrapper(TIGHT).bootstrap(V, deposits(), swaps());
+        LocalDate settle = LocalDate.of(2026, 10, 6);
+        Bond bond = new Bond(LocalDate.of(2025, 1, 14),
+                List.of(LocalDate.of(2026, 1, 14), LocalDate.of(2027, 1, 14),
+                        LocalDate.of(2027, 4, 24), LocalDate.of(2027, 8, 2)),
+                100.0, 0.06);
+        CallableBondPricer pricer = new CallableBondPricer();
+        List<CallPrice> calls = List.of(
+                new CallPrice(LocalDate.of(2027, 1, 14), 101.50),
+                new CallPrice(LocalDate.of(2027, 4, 24), 100.75));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(bond, settle, r.curve(), Double.NaN, 100, calls));
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(bond, settle, r.curve(), -0.001, 100, calls));
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(bond, settle, r.curve(), 0.01, 99, calls));
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(bond, settle, r.curve(), 0.01, 7, calls));
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(bond, settle, r.curve(), 0.01, 100,
+                        List.of(new CallPrice(LocalDate.of(2027, 2, 14), 100.0))));
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(bond, settle, r.curve(), 0.01, 100,
+                        List.of(new CallPrice(settle, 100.0))));
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(bond, settle, r.curve(), 0.01, 100,
+                        List.of(new CallPrice(LocalDate.of(2027, 8, 2), 100.0))));
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(bond, settle, r.curve(), 0.01, 100,
+                        List.of(new CallPrice(LocalDate.of(2027, 1, 14), 100.0),
+                                new CallPrice(LocalDate.of(2027, 1, 14), 101.0))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CallPrice(LocalDate.of(2027, 1, 14), 0.0));
+
+        Bond beyondCurve = new Bond(LocalDate.of(2025, 1, 14),
+                List.of(LocalDate.of(2026, 1, 14), LocalDate.of(2029, 8, 2)),
+                100.0, 0.06);
+        assertThrows(IllegalArgumentException.class,
+                () -> pricer.price(beyondCurve, settle, r.curve(), 0.01, 1,
+                        List.of()));
+    }
 }
